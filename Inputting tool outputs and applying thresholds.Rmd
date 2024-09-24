@@ -1,0 +1,339 @@
+---
+title: "Inputting tool outputs and applying thresholds"
+author: "Ali Al-Rashed"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+### Description
+
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+```
+
+
+## Input and process Kraken2 files
+
+
+```{r}
+#input all kraken2withminimizer outputs
+list_of_files <- list.files(path = "./kraken2withminimiser.s038", recursive = TRUE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+
+DT <- rbindlist(sapply(list_of_files, fread, simplify = FALSE),
+                use.names = TRUE, idcol = "FileName")
+
+DT$FileName<-gsub("^.*?s038/", "", DT$FileName)
+DT$FileName<-gsub(".k.*", "", DT$FileName)
+DT$FileName<-gsub("_.*", "", DT$FileName)
+
+kraken2_allsamples<-as.data.frame(DT)
+colnames(kraken2_allsamples)<- c("FileName","%","reads_covered_by_taxon","reads_assigned_to_taxon","minimizer_count","minimizer_unique","rank","taxid","name")
+
+########################
+##Add unique identifiers just in case
+kraken2_allsamples[,10]<-rownames(kraken2_allsamples)
+colnames(kraken2_allsamples)[10]<-"rownumber"
+kraken2_allsamples$rownumber<-as.numeric(kraken2_allsamples$rownumber)
+
+#calculate total number of reads for each tool output
+#create a for loop
+kraken2_allsamples_totalreads<-matrix(NA, ncol = 11)
+colnames(kraken2_allsamples_totalreads)<-c("FileName", "%", "reads_covered_by_taxon" ,"reads_assigned_to_taxon", "minimizer_count", "minimizer_unique", "rank",
+                                           "taxid","name",  "rownumber", "total_reads")
+sample.names<-unique(kraken2_allsamples$FileName)
+
+
+for (i in sample.names){
+  step.1<-kraken2_allsamples[kraken2_allsamples$FileName == i,]
+  step.2<-step.1[-1,]
+  sumofreads<-sum(step.2$reads_covered_by_taxon)
+  step.2$total_reads<-sumofreads
+  kraken2_allsamples_totalreads<-rbind(kraken2_allsamples_totalreads, step.2)
+}
+kraken2_allsamples_totalreads<-kraken2_allsamples_totalreads[-is.na(kraken2_allsamples_totalreads),]
+kraken2_allsamples.rpm<-kraken2_allsamples_totalreads
+kraken2_allsamples.rpm$rpm<-(kraken2_allsamples.rpm$reads_covered_by_taxon*1000000)/kraken2_allsamples.rpm$total_reads
+
+#extract viruses only
+#create a for loop
+kraken2_allsamples.v<-matrix(NA, ncol=10)
+colnames(kraken2_allsamples.v)<-colnames(kraken2_allsamples)
+sample.names<-unique(kraken2_allsamples$FileName)
+onesample.viruses<-NA
+
+for (i in sample.names) {
+  r.start <- rownames(kraken2_allsamples %>% subset(name == "Viruses" & FileName == i))
+  r.i<-(kraken2_allsamples %>% subset(FileName == i))
+  r.end<-rownames(tail(r.i,1))
+  onesample.viruses<-kraken2_allsamples %>% slice(r.start:r.end)
+  kraken2_allsamples.v<-rbind(kraken2_allsamples.v,onesample.viruses)
+}
+kraken2_allsamples.v<-kraken2_allsamples.v[-is.na(kraken2_allsamples.v),]
+
+#extract species only
+kraken2_allsamples.v<-kraken2_allsamples.v %>% filter(rank == "S")
+
+#Apply criteria
+#minimum 10 reads
+kraken2_allsamples.v.all<-kraken2_allsamples.v[kraken2_allsamples.v$reads_covered_by_taxon>=10,]
+
+#minimum 10 unique minimizers
+kraken2_allsamples.v.all<-kraken2_allsamples.v.all[kraken2_allsamples.v.all$minimizer_unique>=10,]
+
+#add rpm to kraken2_allsamples.v.all
+kraken2_allsamples.fnl<-matrix(NA, ncol = 11)
+colnames(kraken2_allsamples.fnl)<-seq(1,11)
+colnames(kraken2_allsamples.fnl)[1:10]<-colnames(kraken2_allsamples)
+colnames(kraken2_allsamples.fnl)[11]<-"rpm"
+sample.names<-unique(kraken2_allsamples.v.all$FileName)
+onesample.viruses<-NA
+
+for (i in sample.names){
+  step.1<-kraken2_allsamples.v.all[kraken2_allsamples.v.all$FileName == i,]
+  step.2<-kraken2_allsamples.rpm[kraken2_allsamples.rpm$FileName == i,]
+  step.2.compressed<-step.2[,c(8,12)]
+  step.3<-left_join(step.1,step.2.compressed, by = "taxid")
+  kraken2_allsamples.fnl<-rbind(kraken2_allsamples.fnl,step.3)
+}
+kraken2_allsamples.fnl<-kraken2_allsamples.fnl[-is.na(kraken2_allsamples.fnl),]
+
+```
+
+
+## Input and process Centrifuge files
+
+
+```{r}
+#Input centrifuge report output
+
+list_of_files <- list.files(path = "./centrifugedb", recursive = TRUE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+list_of_files<-list_of_files[str_detect(list_of_files,"centrifuge.report.txt")]
+
+DT <- rbindlist(sapply(list_of_files, fread, simplify = FALSE),
+                use.names = TRUE, idcol = "FileName")
+
+DT$FileName<-gsub("^.*?centrifugedb/", "", DT$FileName)
+DT$FileName<-gsub(".c.*", "", DT$FileName)
+DT$FileName<-gsub("_.*", "", DT$FileName)
+
+centrifuge_allsamples.report<-as.data.frame(DT)
+colnames(centrifuge_allsamples.report)<- c("FileName", "name","taxid","rank","genomesize","numReads", "numUniqueReads","abundance")
+
+#extract species only
+centrifuge_allsamples.report<-centrifuge_allsamples.report[centrifuge_allsamples.report$rank == "species",]
+
+#Apply Criteria, min 10 unique reads (for species only)
+centrifuge_allsamples.report<-centrifuge_allsamples.report[centrifuge_allsamples.report$numUniqueReads>=10,]
+
+###################
+
+#Centrifuge txt files
+
+###################
+#input all centrifuge txt outputs
+list_of_files <- list.files(path = "./centrifugedb", recursive = TRUE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+list_of_files<-list_of_files[str_detect(list_of_files,"centrifuge.txt")]
+
+DT <- rbindlist(sapply(list_of_files, fread, simplify = FALSE),
+                use.names = TRUE, idcol = "FileName")
+
+DT$FileName<-gsub("^.*?centrifugedb/", "", DT$FileName)
+DT$FileName<-gsub(".c.*", "", DT$FileName)
+DT$FileName<-gsub("_.*", "", DT$FileName)
+
+centrifuge_allsamples<-as.data.frame(DT)
+colnames(centrifuge_allsamples)<- c("FileName", "%","reads_covered_by_taxon","reads_assigned_to_taxon","rank","taxid","name")
+
+##########
+#Add unique identifiers just in case
+centrifuge_allsamples[,8]<-rownames(centrifuge_allsamples)
+colnames(centrifuge_allsamples)[8]<-"rownumber"
+centrifuge_allsamples$rownumber<-as.numeric(centrifuge_allsamples$rownumber)
+
+#calculate total number of reads
+#create a for loop
+centrifuge_allsamples_totalreads<-matrix(NA, ncol = 9)
+colnames(centrifuge_allsamples_totalreads)<-seq(1,9)
+colnames(centrifuge_allsamples_totalreads)[1:8]<-colnames(centrifuge_allsamples)
+colnames(centrifuge_allsamples_totalreads)[9]<-"total_reads"
+sample.names<-unique(centrifuge_allsamples$FileName)
+
+for (i in sample.names){
+  step.1<-centrifuge_allsamples[centrifuge_allsamples$FileName == i,]
+  step.2<-step.1[-1,]
+  sumofreads<-sum(step.2$reads_covered_by_taxon)
+  step.2$total_reads<-sumofreads
+  centrifuge_allsamples_totalreads<-rbind(centrifuge_allsamples_totalreads, step.2)
+}
+centrifuge_allsamples_totalreads<-centrifuge_allsamples_totalreads[-is.na(centrifuge_allsamples_totalreads),]
+centrifuge_allsamples.rpm<-centrifuge_allsamples_totalreads
+centrifuge_allsamples.rpm$rpm<-(centrifuge_allsamples.rpm$reads_covered_by_taxon*1000000)/centrifuge_allsamples.rpm$total_reads
+
+#extract viruses only
+#create a for loop
+centrifuge_allsamples.v<-matrix(NA, ncol=8)
+colnames(centrifuge_allsamples.v)<-colnames(centrifuge_allsamples)
+sample.names<-unique(centrifuge_allsamples$FileName)
+onesample.viruses<-NA
+
+for (i in sample.names) {
+  r.start <- rownames(centrifuge_allsamples %>% subset(name == "Viruses" & FileName == i))
+  r.i<-(centrifuge_allsamples %>% subset(FileName == i))
+  r.end<-rownames(tail(r.i,1))
+  onesample.viruses<-centrifuge_allsamples %>% slice(r.start:r.end)
+  centrifuge_allsamples.v<-rbind(centrifuge_allsamples.v,onesample.viruses)
+}
+centrifuge_allsamples.v<-centrifuge_allsamples.v[-is.na(centrifuge_allsamples.v),]
+
+#extract species only
+centrifuge_allsamples.v<-centrifuge_allsamples.v %>% filter(rank=="S")
+
+#Apply criteria
+#minimum 10 reads
+centrifuge_allsamples.v.all<-centrifuge_allsamples.v[centrifuge_allsamples.v$reads_covered_by_taxon>=10,]
+
+#add rpm to centrifuge_allsamples.v.all
+centrifuge_allsamples.fnl<-matrix(NA, ncol = 9)
+colnames(centrifuge_allsamples.fnl)<-seq(1,9)
+colnames(centrifuge_allsamples.fnl)[1:8]<-colnames(centrifuge_allsamples)
+colnames(centrifuge_allsamples.fnl)[9]<-"rpm"
+sample.names<-unique(centrifuge_allsamples.v.all$FileName)
+onesample.viruses<-NA
+
+for (i in sample.names){
+  step.1<-centrifuge_allsamples.v.all[centrifuge_allsamples.v.all$FileName == i,]
+  step.2<-centrifuge_allsamples.rpm[centrifuge_allsamples.rpm$FileName == i,]
+  step.2.compressed<-step.2[,c(6,10)]
+  step.3<-left_join(step.1,step.2.compressed, by = "taxid")
+  centrifuge_allsamples.fnl<-rbind(centrifuge_allsamples.fnl,step.3)
+}
+centrifuge_allsamples.fnl<-centrifuge_allsamples.fnl[-is.na(centrifuge_allsamples.fnl),]
+
+#add number of unique reads, join two datasets by taxid in each samples id
+centrifuge_allsamples.report
+centrifuge_allsamples.fnl
+#create a for loop
+centrifuge_allsamples.fnl.uniq<-matrix(NA, ncol = 10)
+colnames(centrifuge_allsamples.fnl.uniq)<-seq(1,10)
+colnames(centrifuge_allsamples.fnl.uniq)[1:9]<-colnames(centrifuge_allsamples.fnl)
+colnames(centrifuge_allsamples.fnl.uniq)[10]<-"numUniqueReads"
+sample.names<-unique(centrifuge_allsamples.fnl$FileName)
+
+for (i in sample.names){
+  step.1<-centrifuge_allsamples.fnl[centrifuge_allsamples.fnl$FileName == i,]
+  step.2<-centrifuge_allsamples.report[centrifuge_allsamples.report$FileName == i,]
+  step.3<-step.2[,c(3,7)]
+  joinnow<-left_join(step.1,step.3, by = "taxid")
+  centrifuge_allsamples.fnl.uniq<-rbind(centrifuge_allsamples.fnl.uniq,joinnow)
+}
+centrifuge_allsamples.fnl.uniq<-centrifuge_allsamples.fnl.uniq[-is.na(centrifuge_allsamples.fnl.uniq),]
+
+#remove NA unique read 
+centrifuge_allsamples.fnl.uniq<-centrifuge_allsamples.fnl.uniq[!is.na(centrifuge_allsamples.fnl.uniq$numUniqueReads < 10),]
+
+```
+
+
+## Input and process Kaiju files
+
+
+```{r}
+#input Kaiju viral species outputs
+list_of_files <- list.files(path = "./kaijudb_species", recursive = TRUE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+
+DT <- rbindlist(sapply(list_of_files, fread, simplify = FALSE),
+                use.names = TRUE, idcol = "FileName")
+
+DT$FileName<-gsub("^.*?kaijudb_species/", "", DT$FileName)
+DT$FileName<-gsub(".k.*", "", DT$FileName)
+DT$FileName<-gsub("_.*", "", DT$FileName)
+
+kaiju_allsamples<-as.data.frame(DT)
+colnames(kaiju_allsamples)<- c("FileName", "file","%","reads","taxid","name")
+kaiju_allsamples<-kaiju_allsamples[c(1,3,4,5)]
+
+########
+#calculate total number of reads
+#create a for loop
+kaiju_allsamples_totalreads<-matrix(NA, ncol = 5)
+colnames(kaiju_allsamples_totalreads)<-seq(1,5)
+colnames(kaiju_allsamples_totalreads)[1:4]<-colnames(kaiju_allsamples)
+colnames(kaiju_allsamples_totalreads)[5]<-"total_reads"
+sample.names<-unique(kaiju_allsamples$FileName)
+
+for (i in sample.names){
+  step.1<-kaiju_allsamples[kaiju_allsamples$FileName == i,]
+  step.2<-step.1[-1,]
+  sumofreads<-sum(step.2$reads)
+  step.2$total_reads<-sumofreads
+  kaiju_allsamples_totalreads<-rbind(kaiju_allsamples_totalreads, step.2)
+}
+kaiju_allsamples_totalreads<-kaiju_allsamples_totalreads[-is.na(kaiju_allsamples_totalreads),]
+kaiju_allsamples<-kaiju_allsamples_totalreads
+kaiju_allsamples$rpm<-(kaiju_allsamples$reads*1000000)/kaiju_allsamples$total_reads
+
+#Apply criteria
+#minimum 10 reads
+kaiju_allsamples.all<-kaiju_allsamples[kaiju_allsamples$reads>=10,]
+
+```
+
+
+## Input and process Krakenuniq files
+
+
+```{r}
+#Thresholds were not applied here because krakenuniq wasn't used in the overlap approach. Only genome coverage information is needed.
+
+#input all krakenuniq outputs
+list_of_files <- list.files(path = "./krakenuniqdb", recursive = TRUE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+
+DT <- rbindlist(sapply(list_of_files, fread, simplify = FALSE),
+                use.names = TRUE, idcol = "FileName")
+
+DT$FileName<-gsub("^.*?b/", "", DT$FileName)
+DT$FileName<-gsub(".k.*", "", DT$FileName)
+DT$FileName<-gsub("_.*", "", DT$FileName)
+
+krakenuniq_allsamples<-as.data.frame(DT)
+
+
+########################
+#Add unique identifiers just in case
+krakenuniq_allsamples[,11]<-rownames(krakenuniq_allsamples)
+colnames(krakenuniq_allsamples)[11]<-"rownumber"
+
+#extract viruses only
+#create a for loop
+krakenuniq_allsamples.v<-matrix(NA, ncol=11)
+colnames(krakenuniq_allsamples.v)<-colnames(krakenuniq_allsamples)
+sample.names<-unique(krakenuniq_allsamples$FileName)
+onesample.viruses<-NA
+
+for (i in sample.names) {
+  r.start <- rownames(krakenuniq_allsamples %>% subset(taxName == "Viruses" & FileName == i))
+  r.i<-(krakenuniq_allsamples %>% subset(FileName == i))
+  r.end<-rownames(tail(r.i,1))
+  onesample.viruses<-krakenuniq_allsamples %>% slice(r.start:r.end)
+  krakenuniq_allsamples.v<-rbind(krakenuniq_allsamples.v,onesample.viruses)
+}
+krakenuniq_allsamples.v<-krakenuniq_allsamples.v[-is.na(krakenuniq_allsamples.v),]
+
+#extract species only
+krakenuniq_allsamples.v<-krakenuniq_allsamples.v %>% filter(rank=="species")
+```
+
+
